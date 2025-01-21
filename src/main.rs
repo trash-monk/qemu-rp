@@ -1,3 +1,6 @@
+mod portmapper;
+
+use portmapper::PortMapper;
 use anyhow::Result;
 use clap::{command, Arg};
 use log::error;
@@ -16,30 +19,59 @@ use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
 
 struct Connection {
-    remote: TcpStream,
+    socket: TcpStream,
+    port: u16,
 }
 
 fn main() -> ! {
     env_logger::init();
 
+    let mut ports = PortMapper::new();
+
     let args = command!()
         .arg(
-            Arg::new("hostport")
-                .required(true)
-                .value_parser(clap::builder::ValueParser::new(SocketAddr::from_str))
-                .help("hostport to listen on"),
-        )
-        .arg(
             Arg::new("socket")
+                .long("socket")
                 .required(true)
                 .help("path to server socket for QEMU to connect to"),
+        )
+        .arg(
+            Arg::new("listen")
+                .long("listen")
+                .required(true)
+                .value_parser(clap::builder::ValueParser::new(SocketAddr::from_str))
+                .help("local address to listen on"),
+        )
+        .arg(
+            Arg::new("remote")
+                .long("remote")
+                .required(true)
+                .value_parser(clap::builder::ValueParser::new(SocketAddr::from_str))
+                .help("peer address in the VM to forward connection to"),
+        )
+        .arg(
+            Arg::new("local")
+                .long("local")
+                .required(true)
+                .value_parser(clap::builder::ValueParser::new(IpCidr::from_str))
+                .help("local CIDR in the VM"),
+        )
+        .arg(
+            Arg::new("mac")
+                .long("mac")
+                .value_parser(clap::builder::ValueParser::new(EthernetAddress::from_str))
+                .default_value("42:00:00:00:00:69")
+                .help("local MAC address in the VM"),
         )
         .get_matches();
 
     let socket_path = args.get_one::<String>("socket").unwrap();
-    let hostport = args.get_one::<SocketAddr>("hostport").unwrap();
+    let listen_addr = args.get_one::<SocketAddr>("listen").unwrap();
+    let remote_addr = args.get_one::<SocketAddr>("remote").unwrap();
+    let local_addr = args.get_one::<IpCidr>("local").unwrap();
+    let mac_addr = args.get_one::<EthernetAddress>("mac").unwrap();
 
-    let listener = TcpListener::bind(hostport).unwrap();
+    let listener = TcpListener::bind(listen_addr).unwrap();
     listener.set_nonblocking(true).unwrap();
 
     match fs::remove_file(socket_path) {
@@ -51,9 +83,7 @@ fn main() -> ! {
 
     let mut device = PcapWriter::new(Loopback::new(Medium::Ethernet), stdout(), PcapMode::Both);
 
-    let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress([
-        42, 0, 0, 0, 0, 69,
-    ])));
+    let mut config = Config::new(HardwareAddress::Ethernet(*mac_addr));
     config.random_seed = rand::random();
 
     let mut iface = Interface::new(config, &mut device, Instant::now());
@@ -71,11 +101,24 @@ fn main() -> ! {
     loop {
         match listener.accept() {
             Ok((remote, _)) => {
-                let handle = sockets.add(Socket::new(
+                remote.set_nonblocking(true).unwrap();
+
+                let port  = ports.get();
+
+                let mut sock = Socket::new(
                     SocketBuffer::new(vec![0; 65535]),
                     SocketBuffer::new(vec![0; 65535]),
-                ));
-                connections.insert(handle, Connection { remote });
+                );
+
+                sock.connect(
+                    iface.context(),
+                    (IpAddress::v4(192, 168, 69, 1), 80),
+                    port,
+                ).unwrap();
+
+                let handle = sockets.add(sock);
+
+                connections.insert(handle, Connection { socket:remote, port });
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => Err(e).unwrap(),
