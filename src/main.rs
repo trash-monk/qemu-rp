@@ -1,9 +1,9 @@
-mod portmapper;
+mod port_alloc;
 mod proxy;
 
 use clap::{command, Arg};
 use log::error;
-use portmapper::*;
+use port_alloc::*;
 use proxy::*;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::wait as phy_wait;
@@ -35,7 +35,7 @@ fn parse_mac(s: &str) -> Result<EthernetAddress, &'static str> {
 fn main() -> ! {
     env_logger::init();
 
-    let mut ports = PortMapper::new();
+    let mut ports = PortAlloc::new();
 
     let args = command!()
         .arg(
