@@ -5,15 +5,17 @@ pub(crate) struct PortMapper {
 }
 
 impl PortMapper {
-    pub(crate)fn new() -> PortMapper {
-        PortMapper{active: HashSet::new()}
+    pub(crate) fn new() -> PortMapper {
+        PortMapper {
+            active: HashSet::new(),
+        }
     }
 
-    pub(crate)fn get(&mut self) -> u16 {
+    pub(crate) fn get(&mut self) -> u16 {
         todo!()
     }
 
-    pub(crate)fn unget(&mut self, port: u16) {
+    pub(crate) fn unget(&mut self, port: u16) {
         todo!()
     }
 }

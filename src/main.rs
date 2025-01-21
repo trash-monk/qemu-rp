@@ -1,15 +1,16 @@
 mod portmapper;
+mod proxy;
 
-use portmapper::PortMapper;
-use anyhow::Result;
 use clap::{command, Arg};
 use log::error;
+use portmapper::*;
+use proxy::*;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::wait as phy_wait;
 use smoltcp::phy::{Loopback, Medium, PcapMode, PcapWriter};
 use smoltcp::socket::tcp::{Socket, SocketBuffer};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{stdout, ErrorKind};
@@ -21,6 +22,14 @@ use std::str::FromStr;
 struct Connection {
     socket: TcpStream,
     port: u16,
+}
+
+fn parse_cidr(s: &str) -> Result<IpCidr, &'static str> {
+    IpCidr::from_str(s).map_err(|_| "invalid CIDR")
+}
+
+fn parse_mac(s: &str) -> Result<EthernetAddress, &'static str> {
+    EthernetAddress::from_str(s).map_err(|_| "invalid MAC address")
 }
 
 fn main() -> ! {
@@ -53,13 +62,13 @@ fn main() -> ! {
             Arg::new("local")
                 .long("local")
                 .required(true)
-                .value_parser(clap::builder::ValueParser::new(IpCidr::from_str))
+                .value_parser(clap::builder::ValueParser::new(parse_cidr))
                 .help("local CIDR in the VM"),
         )
         .arg(
             Arg::new("mac")
                 .long("mac")
-                .value_parser(clap::builder::ValueParser::new(EthernetAddress::from_str))
+                .value_parser(clap::builder::ValueParser::new(parse_mac))
                 .default_value("42:00:00:00:00:69")
                 .help("local MAC address in the VM"),
         )
@@ -81,6 +90,7 @@ fn main() -> ! {
     }
     let uds = UnixDatagram::bind(socket_path).unwrap();
 
+    // TODO device
     let mut device = PcapWriter::new(Loopback::new(Medium::Ethernet), stdout(), PcapMode::Both);
 
     let mut config = Config::new(HardwareAddress::Ethernet(*mac_addr));
@@ -89,9 +99,7 @@ fn main() -> ! {
     let mut iface = Interface::new(config, &mut device, Instant::now());
 
     iface.update_ip_addrs(|ip_addrs| {
-        ip_addrs
-            .push(IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24))
-            .unwrap();
+        ip_addrs.push(*local_addr).unwrap();
     });
 
     let mut sockets = SocketSet::new(vec![]);
@@ -103,22 +111,24 @@ fn main() -> ! {
             Ok((remote, _)) => {
                 remote.set_nonblocking(true).unwrap();
 
-                let port  = ports.get();
+                let port = ports.get();
 
                 let mut sock = Socket::new(
                     SocketBuffer::new(vec![0; 65535]),
                     SocketBuffer::new(vec![0; 65535]),
                 );
 
-                sock.connect(
-                    iface.context(),
-                    (IpAddress::v4(192, 168, 69, 1), 80),
-                    port,
-                ).unwrap();
+                sock.connect(iface.context(), *remote_addr, port).unwrap();
 
                 let handle = sockets.add(sock);
 
-                connections.insert(handle, Connection { socket:remote, port });
+                connections.insert(
+                    handle,
+                    Connection {
+                        socket: remote,
+                        port,
+                    },
+                );
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => Err(e).unwrap(),
@@ -140,7 +150,8 @@ fn main() -> ! {
         }
 
         for handle in dead.drain(..) {
-            connections.remove(&handle);
+            let old = connections.remove(&handle).unwrap();
+            ports.unget(old.port);
             sockets.remove(handle);
         }
 
@@ -150,8 +161,4 @@ fn main() -> ! {
         )
         .unwrap();
     }
-}
-
-fn proxy(local: &mut Socket, remote: &mut Connection) -> Result<bool> {
-    todo!()
 }
