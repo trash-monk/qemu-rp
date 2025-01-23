@@ -14,15 +14,10 @@ use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{stdout, ErrorKind};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
-
-struct Connection {
-    socket: TcpStream,
-    port: u16,
-}
 
 fn parse_cidr(s: &str) -> Result<IpCidr, &'static str> {
     IpCidr::from_str(s).map_err(|_| "invalid CIDR")
@@ -39,8 +34,8 @@ fn main() -> ! {
 
     let args = command!()
         .arg(
-            Arg::new("socket")
-                .long("socket")
+            Arg::new("qemu-socket")
+                .long("qemu-socket")
                 .required(true)
                 .help("path to server socket for QEMU to connect to"),
         )
@@ -52,8 +47,8 @@ fn main() -> ! {
                 .help("local address to listen on"),
         )
         .arg(
-            Arg::new("remote")
-                .long("remote")
+            Arg::new("forward")
+                .long("forward")
                 .required(true)
                 .value_parser(clap::builder::ValueParser::new(SocketAddr::from_str))
                 .help("peer address in the VM to forward connection to"),
@@ -74,21 +69,21 @@ fn main() -> ! {
         )
         .get_matches();
 
-    let socket_path = args.get_one::<String>("socket").unwrap();
+    let qemu_socket_path = args.get_one::<String>("qemu-socket").unwrap();
     let listen_addr = args.get_one::<SocketAddr>("listen").unwrap();
-    let remote_addr = args.get_one::<SocketAddr>("remote").unwrap();
+    let forward_addr = args.get_one::<SocketAddr>("forward").unwrap();
     let local_addr = args.get_one::<IpCidr>("local").unwrap();
     let mac_addr = args.get_one::<EthernetAddress>("mac").unwrap();
 
     let listener = TcpListener::bind(listen_addr).unwrap();
     listener.set_nonblocking(true).unwrap();
 
-    match fs::remove_file(socket_path) {
+    match fs::remove_file(qemu_socket_path) {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
         Err(e) => Err(e).unwrap(),
     }
-    let uds = UnixDatagram::bind(socket_path).unwrap();
+    let uds = UnixDatagram::bind(qemu_socket_path).unwrap();
 
     // TODO device
     let mut device = PcapWriter::new(Loopback::new(Medium::Ethernet), stdout(), PcapMode::Both);
@@ -118,23 +113,15 @@ fn main() -> ! {
                     SocketBuffer::new(vec![0; 65535]),
                 );
 
-                sock.connect(iface.context(), *remote_addr, port).unwrap();
+                sock.connect(iface.context(), *forward_addr, port).unwrap();
 
                 let handle = sockets.add(sock);
 
-                connections.insert(
-                    handle,
-                    Connection {
-                        socket: remote,
-                        port,
-                    },
-                );
+                connections.insert(handle, Connection::new(remote, port));
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => Err(e).unwrap(),
         }
-
-        iface.poll(Instant::now(), &mut device, &mut sockets);
 
         for (handle, sock) in sockets.iter_mut() {
             let sock = match sock {
@@ -149,10 +136,12 @@ fn main() -> ! {
             dead.push(handle);
         }
 
+        iface.poll(Instant::now(), &mut device, &mut sockets);
+
         for handle in dead.drain(..) {
-            let old = connections.remove(&handle).unwrap();
-            ports.unget(old.port);
             sockets.remove(handle);
+            let old = connections.remove(&handle).unwrap();
+            ports.unget(old.get_port());
         }
 
         phy_wait(
