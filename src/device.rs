@@ -1,42 +1,50 @@
 use anyhow::Result;
-use log::debug;
+use log::{debug, error};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use std::fs;
 use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::os::unix::net::UnixDatagram;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const MTU: usize = 1500;
 
 pub(crate) struct QemuDevice {
-    socket: Rc<UnixDatagram>,
+    target: PathBuf,
+    tx: Rc<UnixDatagram>,
+    rx: UnixDatagram,
 }
 
 pub(crate) struct QemuRxToken<'a> {
     buf: Vec<u8>,
     phantom: PhantomData<&'a ()>,
 }
+
 pub(crate) struct QemuTxToken<'a> {
     socket: Rc<UnixDatagram>,
-    phantom: PhantomData<&'a ()>,
+    target: &'a Path,
 }
 
 impl QemuDevice {
-    pub(crate) fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
-        match fs::remove_file(path.as_ref()) {
+    pub(crate) fn new<P: AsRef<Path>>(bind_path: P, connect_path: P) -> Result<Self> {
+        match fs::remove_file(bind_path.as_ref()) {
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return anyhow::Result::Err(e.into()),
         }
 
-        let uds = UnixDatagram::bind(path.as_ref())?;
-        uds.set_nonblocking(true)?;
+        let rx = UnixDatagram::bind(bind_path.as_ref())?;
+        rx.set_nonblocking(true)?;
+
+        let tx = UnixDatagram::unbound()?;
+        tx.set_nonblocking(true)?;
 
         Ok(Self {
-            socket: Rc::new(uds),
+            rx,
+            tx: Rc::new(tx),
+            target: connect_path.as_ref().to_owned(),
         })
     }
 }
@@ -48,10 +56,13 @@ impl Device for QemuDevice {
     fn receive(&mut self, _: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let mut buf: Vec<u8> = vec![0; 2 * MTU];
 
-        match self.socket.recv(&mut buf) {
+        match self.rx.recv(&mut buf) {
             Ok(size) => buf.truncate(size),
             Err(e) if e.kind() == ErrorKind::WouldBlock => return None,
-            Err(e) => Err(e).unwrap(),
+            Err(e) => {
+                error!("uds rx {:?}", e);
+                return None;
+            },
         }
 
         Some((
@@ -60,16 +71,16 @@ impl Device for QemuDevice {
                 phantom: Default::default(),
             },
             QemuTxToken {
-                socket: Rc::clone(&self.socket),
-                phantom: Default::default(),
+                socket: Rc::clone(&self.tx),
+                target: &self.target,
             },
         ))
     }
 
     fn transmit(&mut self, _: Instant) -> Option<Self::TxToken<'_>> {
         Some(QemuTxToken {
-            socket: Rc::clone(&self.socket),
-            phantom: Default::default(),
+            socket: Rc::clone(&self.tx),
+            target: &self.target,
         })
     }
 
@@ -98,10 +109,10 @@ impl<'a> TxToken for QemuTxToken<'a> {
         let mut buf: Vec<u8> = vec![0; len];
         let result = f(&mut buf);
 
-        match self.socket.send(&buf) {
+        match self.socket.send_to(&buf, self.target) {
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::WouldBlock => debug!("dropped tx of length {}", len),
-            Err(e) => Err(e).unwrap(),
+            Err(e) => error!("uds tx {:?}", e),
         }
 
         result

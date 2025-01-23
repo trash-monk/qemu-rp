@@ -33,10 +33,16 @@ fn main() -> ! {
 
     let args = command!()
         .arg(
-            Arg::new("qemu-socket")
-                .long("qemu-socket")
+            Arg::new("bind-path")
+                .long("bind-path")
                 .required(true)
-                .help("path to server socket for QEMU to connect to"),
+                .help("path to server socket to listen on"),
+        )
+        .arg(
+            Arg::new("connect-path")
+                .long("connect-path")
+                .required(true)
+                .help("path to QEMU's listening socket"),
         )
         .arg(
             Arg::new("listen")
@@ -68,7 +74,8 @@ fn main() -> ! {
         )
         .get_matches();
 
-    let qemu_socket_path = args.get_one::<String>("qemu-socket").unwrap();
+    let bind_path = args.get_one::<String>("bind-path").unwrap();
+    let connect_path = args.get_one::<String>("connect-path").unwrap();
     let listen_addr = args.get_one::<SocketAddr>("listen").unwrap();
     let forward_addr = args.get_one::<SocketAddr>("forward").unwrap();
     let local_addr = args.get_one::<IpCidr>("local").unwrap();
@@ -77,7 +84,7 @@ fn main() -> ! {
     let listener = TcpListener::bind(listen_addr).unwrap();
     listener.set_nonblocking(true).unwrap();
 
-    let mut device = QemuDevice::new(qemu_socket_path).unwrap();
+    let mut device = QemuDevice::new(bind_path, connect_path).unwrap();
 
     let mut config = Config::new(HardwareAddress::Ethernet(*mac_addr));
     config.random_seed = rand::random();
