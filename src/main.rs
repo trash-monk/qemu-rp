@@ -1,22 +1,21 @@
+mod device;
 mod port_alloc;
 mod proxy;
 
+use crate::device::*;
+use crate::port_alloc::*;
+use crate::proxy::*;
 use clap::{command, Arg};
 use log::error;
-use port_alloc::*;
-use proxy::*;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::wait as phy_wait;
-use smoltcp::phy::{Loopback, Medium, PcapMode, PcapWriter};
 use smoltcp::socket::tcp::{Socket, SocketBuffer};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr};
 use std::collections::HashMap;
-use std::fs;
-use std::io::{stdout, ErrorKind};
+use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpListener};
 use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
 
 fn parse_cidr(s: &str) -> Result<IpCidr, &'static str> {
@@ -78,15 +77,7 @@ fn main() -> ! {
     let listener = TcpListener::bind(listen_addr).unwrap();
     listener.set_nonblocking(true).unwrap();
 
-    match fs::remove_file(qemu_socket_path) {
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => Err(e).unwrap(),
-    }
-    let uds = UnixDatagram::bind(qemu_socket_path).unwrap();
-
-    // TODO device
-    let mut device = PcapWriter::new(Loopback::new(Medium::Ethernet), stdout(), PcapMode::Both);
+    let mut device = QemuDevice::new(qemu_socket_path).unwrap();
 
     let mut config = Config::new(HardwareAddress::Ethernet(*mac_addr));
     config.random_seed = rand::random();
