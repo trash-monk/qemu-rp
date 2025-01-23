@@ -1,4 +1,5 @@
 use anyhow::{Ok, Result};
+use log::{debug, trace};
 use smoltcp::socket::tcp::Socket;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -26,7 +27,10 @@ fn proxy_inner(vm_client: &mut Socket, remote: &mut Connection) -> Result<()> {
 
     if vm_client.can_recv() {
         rc = vm_client.recv(|data| match remote.socket.write(data) {
-            Result::Ok(written) => (written, Ok(())),
+            Result::Ok(written) => {
+                trace!("{} recv from vm {}", remote.get_port(), written);
+                (written, Ok(()))
+            }
             Err(e) if e.kind() == ErrorKind::WouldBlock => (0, Ok(())),
             Err(e) => (0, Err(e.into())),
         })?;
@@ -39,12 +43,16 @@ fn proxy_inner(vm_client: &mut Socket, remote: &mut Connection) -> Result<()> {
     if vm_client.can_send() {
         let got = vm_client.send(|data| match remote.socket.read(data) {
             Result::Ok(0) => (0, Ok(true)),
-            Result::Ok(written) => (written, Ok(false)),
+            Result::Ok(written) => {
+                trace!("{} send to vm {}", remote.get_port(), written);
+                (written, Ok(false))
+            }
             Err(e) if e.kind() == ErrorKind::WouldBlock => (0, Ok(false)),
             Err(e) => (0, Err(e.into())),
         })?;
         rc = got.map(|closed| {
             if closed {
+                debug!("{} close vm connection", remote.get_port());
                 vm_client.close()
             }
         })
@@ -62,6 +70,7 @@ pub(crate) fn proxy(vm_client: &mut Socket, remote: &mut Connection) -> Result<b
     }
 
     if vm_client.may_recv() || vm_client.may_send() {
+        debug!("{} vm connection closed", remote.get_port());
         return Ok(true);
     }
 

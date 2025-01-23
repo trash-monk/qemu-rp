@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{debug, error};
+use log::{debug, error, trace};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use std::fs;
@@ -60,10 +60,12 @@ impl Device for QemuDevice {
             Ok(size) => buf.truncate(size),
             Err(e) if e.kind() == ErrorKind::WouldBlock => return None,
             Err(e) => {
-                error!("uds rx {:?}", e);
+                error!("rx {:?}", e);
                 return None;
-            },
+            }
         }
+
+        trace!("rx {}", buf.len());
 
         Some((
             QemuRxToken {
@@ -110,9 +112,9 @@ impl<'a> TxToken for QemuTxToken<'a> {
         let result = f(&mut buf);
 
         match self.socket.send_to(&buf, self.target) {
-            Ok(_) => {}
+            Ok(written) => trace!("tx {}", written),
             Err(e) if e.kind() == ErrorKind::WouldBlock => debug!("dropped tx of length {}", len),
-            Err(e) => error!("uds tx {:?}", e),
+            Err(e) => error!("tx {:?}", e),
         }
 
         result

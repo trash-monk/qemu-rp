@@ -6,7 +6,7 @@ use crate::device::*;
 use crate::port_alloc::*;
 use crate::proxy::*;
 use clap::{command, Arg};
-use log::error;
+use log::{debug, error, info, trace};
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::wait as phy_wait;
 use smoltcp::socket::tcp::{Socket, SocketBuffer};
@@ -102,9 +102,13 @@ fn main() -> ! {
     loop {
         match listener.accept() {
             Ok((remote, _)) => {
+                info!("connection from {:?}", remote.peer_addr());
+                debug!("local address {:?}", remote.local_addr());
+
                 remote.set_nonblocking(true).unwrap();
 
                 let port = ports.get();
+                debug!("allocated port {}", port);
 
                 let mut sock = Socket::new(
                     SocketBuffer::new(vec![0; 65535]),
@@ -140,12 +144,11 @@ fn main() -> ! {
             sockets.remove(handle);
             let old = connections.remove(&handle).unwrap();
             ports.unget(old.get_port());
+            debug!("{} cleaning up", old.get_port());
         }
 
-        phy_wait(
-            listener.as_raw_fd(),
-            iface.poll_delay(Instant::now(), &sockets),
-        )
-        .unwrap();
+        let delay = iface.poll_delay(Instant::now(), &sockets);
+        trace!("waiting {:?}", delay);
+        phy_wait(listener.as_raw_fd(), delay).unwrap();
     }
 }
