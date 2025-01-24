@@ -69,10 +69,10 @@ pub(crate) fn proxy(vm_client: &mut Socket, remote: &mut Connection) -> Result<b
         return Err(e);
     }
 
-    if vm_client.may_recv() || vm_client.may_send() {
-        debug!("{} vm connection closed", remote.get_port());
+    if vm_client.is_active() || vm_client.recv_queue() > 0 {
         return Ok(true);
     }
 
+    debug!("{} vm connection closed", remote.get_port());
     Ok(false)
 }
