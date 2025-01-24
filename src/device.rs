@@ -47,6 +47,10 @@ impl QemuDevice {
             target: connect_path.as_ref().to_owned(),
         })
     }
+
+    pub(crate) fn get_rx(&self) -> &UnixDatagram {
+        &self.rx
+    }
 }
 
 impl Device for QemuDevice {

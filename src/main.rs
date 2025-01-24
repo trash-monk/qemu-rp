@@ -7,15 +7,18 @@ use crate::port_alloc::*;
 use crate::proxy::*;
 use clap::{command, Arg};
 use log::{debug, error, info, trace};
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::wait as phy_wait;
+use nix::libc::{suseconds_t, time_t};
+use nix::sys::select::{select, FdSet};
+use nix::sys::time::TimeVal;
+use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::{Socket, SocketBuffer};
-use smoltcp::time::Instant;
+use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpListener};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
+use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
 
 fn parse_cidr(s: &str) -> Result<IpCidr, &'static str> {
@@ -143,12 +146,34 @@ fn main() -> ! {
         for handle in dead.drain(..) {
             sockets.remove(handle);
             let old = connections.remove(&handle).unwrap();
-            ports.unget(old.get_port());
-            debug!("{} cleaning up", old.get_port());
+            ports.unget(old.port);
+            debug!("{} cleaning up", old.port);
         }
 
         let delay = iface.poll_delay(Instant::now(), &sockets);
         trace!("waiting {:?}", delay);
-        phy_wait(listener.as_raw_fd(), delay).unwrap();
+        wait(
+            &listener,
+            device.get_rx(),
+            &connections,
+            delay.unwrap_or(Duration::from_secs(1)),
+        )
+        .unwrap()
     }
+}
+
+fn wait(
+    listener: &TcpListener,
+    rx: &UnixDatagram,
+    connections: &HashMap<SocketHandle, Connection>,
+    delay: Duration,
+) -> nix::Result<()> {
+    let mut timeout = TimeVal::new(delay.secs() as time_t, delay.micros() as suseconds_t);
+    let mut fds = FdSet::new();
+    fds.insert(listener.as_fd());
+    fds.insert(rx.as_fd());
+    for conn in connections.values() {
+        fds.insert(conn.socket.as_fd())
+    }
+    select(None, &mut fds, None, None, Some(&mut timeout)).map(|_| ())
 }

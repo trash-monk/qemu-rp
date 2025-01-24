@@ -5,8 +5,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 
 pub(crate) struct Connection {
-    socket: TcpStream,
-    port: u16,
+    pub(crate) socket: TcpStream,
+    pub(crate) port: u16,
 }
 
 impl Connection {
@@ -16,10 +16,6 @@ impl Connection {
             port,
         }
     }
-
-    pub(crate) fn get_port(&self) -> u16 {
-        self.port
-    }
 }
 
 fn proxy_inner(vm_client: &mut Socket, remote: &mut Connection) -> Result<()> {
@@ -28,7 +24,7 @@ fn proxy_inner(vm_client: &mut Socket, remote: &mut Connection) -> Result<()> {
     if vm_client.can_recv() {
         rc = vm_client.recv(|data| match remote.socket.write(data) {
             Result::Ok(written) => {
-                trace!("{} recv from vm {}", remote.get_port(), written);
+                trace!("{} recv from vm {}", remote.port, written);
                 (written, Ok(()))
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => (0, Ok(())),
@@ -44,7 +40,7 @@ fn proxy_inner(vm_client: &mut Socket, remote: &mut Connection) -> Result<()> {
         let got = vm_client.send(|data| match remote.socket.read(data) {
             Result::Ok(0) => (0, Ok(true)),
             Result::Ok(written) => {
-                trace!("{} send to vm {}", remote.get_port(), written);
+                trace!("{} send to vm {}", remote.port, written);
                 (written, Ok(false))
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => (0, Ok(false)),
@@ -52,7 +48,7 @@ fn proxy_inner(vm_client: &mut Socket, remote: &mut Connection) -> Result<()> {
         })?;
         rc = got.map(|closed| {
             if closed {
-                debug!("{} close vm connection", remote.get_port());
+                debug!("{} close vm connection", remote.port);
                 vm_client.close()
             }
         })
@@ -73,6 +69,6 @@ pub(crate) fn proxy(vm_client: &mut Socket, remote: &mut Connection) -> Result<b
         return Ok(true);
     }
 
-    debug!("{} vm connection closed", remote.get_port());
+    debug!("{} vm connection closed", remote.port);
     Ok(false)
 }
